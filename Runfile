@@ -1,0 +1,89 @@
+require 'bundler'
+Bundler.require 'default'
+require 'open-uri'
+
+title   "Palette Generator"
+summary "Generate color palette from images"
+version "0.1.0"
+
+usage  "INPUT [OUTPUT] [options]"
+help   "Generate SVG palette from an input image"
+option "-c, --count N", "Number of colors to extract [default: 5]"
+option "-t, --threshold N", "Threshold percent [default: 1]"
+param  "INPUT", "Path or URL to an image"
+param  "OUTPUT", "Path to output SVG"
+action :global do |args|
+  input = args['INPUT']
+  output = args['OUTPUT'] || "out.svg"
+  count = args['--count'].to_i
+  threshold = args['--threshold'].to_f / 100.0
+
+  colors = Image.new(input).colors(count, threshold: threshold)
+  palette = Palette.new colors
+  palette.save output
+  say "SVG: #{output}"
+  say "Palette: #{colors.join ' '}"
+end
+
+class Palette
+  attr_reader :colors
+
+  def initialize(colors)
+    @colors = colors
+  end
+
+  def svg
+    @svg ||= Victor::SVG.new width: '100%', height: '100%', viewBox: "0 0 #{width} 100"
+  end
+
+  def width
+    @width ||= colors.count * 20
+  end
+
+  def save(path)
+    colors.each_with_index do |color, index|
+      x = index * 20
+      svg.rect x: x, y: 0, width: 20, height: 100, fill: color
+    end
+
+    svg.save path
+  end
+end
+
+class Image
+  attr_reader :path
+
+  def initialize(path)
+    @path = path
+  end
+
+  def image
+    @image ||= MiniMagick::Image.open path
+  end
+
+  # Source: https://gist.github.com/waffleau/6e074573d4bece3f7a007ed8536512b5
+  def colors(quantity = 5, threshold: 0.01)
+    # Get image histogram
+    result = image.run_command 'convert', image.path, '-format',
+      '%c', '-colors', quantity, '-depth', 8, 'histogram:info:'
+    
+    # Extract colors and frequencies from result
+    frequencies = result.scan(/([0-9]+)\:/).flatten.map { |m| m.to_f }
+    hex_values = result.scan(/(\#[0-9ABCDEF]{6,8})/).flatten
+    total_frequencies = frequencies.reduce(:+).to_f
+
+    # Create frequency/color pairs [frequency, hex],
+    # sort by frequency,
+    # ignore fully transparent colors
+    # select items over frequency threshold (1% by default),
+    # extract hex values,
+    # return desired quantity
+    frequencies
+      .map.with_index { |f, i| [f / total_frequencies, hex_values[i]] }
+      .sort           { |r| r[0] }
+      .reject         { |r| r[1].end_with?('FF') }
+      .select         { |r| r[0] > threshold }
+      .map            { |r| r[1][0..6] }
+      .slice(0, quantity)
+  end
+end
